@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>TETHER — daily swing run</title>
+<meta name="description" content="Real rope physics. One daily world for everyone. Hold to tether, release to fly. Race your own ghost.">
+<style>
+:root{
+  --night:#0b0e1d;--ink:#141831;--silk:#e8e4f0;--ember:#ffb454;
+  --moss:#7fd6a4;--dim:#6b6f8d;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:var(--night);
+  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  -webkit-tap-highlight-color:transparent;touch-action:none;
+  user-select:none;-webkit-user-select:none}
+#c{display:block;width:100%;height:100%}
+.ui{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;pointer-events:none;color:var(--silk);text-align:center;
+  transition:opacity .4s}
+.ui.hidden{opacity:0;pointer-events:none!important}
+h1{font-size:clamp(44px,13vw,90px);letter-spacing:.34em;margin-left:.34em;
+  color:var(--ember);font-weight:700;
+  text-shadow:0 0 28px rgba(255,180,84,.5),0 0 90px rgba(255,180,84,.2)}
+.daily{margin-top:10px;font-size:12px;letter-spacing:.3em;color:var(--moss)}
+.tag{margin-top:18px;font-size:clamp(12px,3.4vw,14px);color:var(--dim);
+  letter-spacing:.1em;line-height:1.9}
+.tag b{color:var(--silk)}
+.blink{margin-top:40px;font-size:13px;letter-spacing:.32em;color:var(--ember);
+  animation:pl 1.7s ease-in-out infinite}
+@keyframes pl{0%,100%{opacity:.25}50%{opacity:1}}
+#hud{position:fixed;top:max(14px,env(safe-area-inset-top));left:0;right:0;
+  text-align:center;pointer-events:none;color:var(--silk);opacity:0;transition:opacity .3s}
+#hud.on{opacity:1}
+#dist{font-size:clamp(30px,8vw,44px);font-weight:700;
+  text-shadow:0 0 16px rgba(232,228,240,.3)}
+#hudsub{font-size:11px;letter-spacing:.25em;color:var(--dim);margin-top:2px}
+#hudsub .ghostlead{color:var(--ember)}
+#pop{position:fixed;top:32%;left:0;right:0;text-align:center;pointer-events:none;
+  font-size:clamp(16px,5vw,24px);letter-spacing:.3em;color:var(--moss);
+  opacity:0;transition:opacity .25s;text-shadow:0 0 20px rgba(127,214,164,.6)}
+#over .lbl{font-size:11px;letter-spacing:.45em;color:var(--dim);margin-bottom:8px}
+#over .big{font-size:clamp(56px,18vw,110px);font-weight:700;
+  text-shadow:0 0 30px rgba(255,180,84,.45)}
+#over .sub{margin-top:16px;font-size:13px;letter-spacing:.18em;color:var(--moss);line-height:2}
+.newbest{color:var(--ember);animation:pl 1s ease-in-out infinite}
+.btnrow{margin-top:32px;display:flex;gap:14px;pointer-events:auto}
+button{font:inherit;font-size:12px;letter-spacing:.2em;padding:13px 24px;
+  background:rgba(255,180,84,.08);color:var(--ember);
+  border:1px solid rgba(255,180,84,.45);border-radius:999px;cursor:pointer}
+button:active{background:rgba(255,180,84,.22)}
+button:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
+#mute{position:fixed;top:max(12px,env(safe-area-inset-top));
+  right:max(12px,env(safe-area-inset-right));width:42px;height:42px;padding:0;
+  font-size:16px;border-radius:50%;z-index:5;
+  background:rgba(20,24,49,.6);border-color:rgba(107,111,141,.5);color:var(--dim)}
+@media (prefers-reduced-motion:reduce){.blink{animation:none;opacity:.85}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><div id="dist">0m</div><div id="hudsub"></div></div>
+<div id="pop"></div>
+<button id="mute" aria-label="toggle sound">♪</button>
+
+<div class="ui" id="title">
+  <h1>TETHER</h1>
+  <div class="daily" id="dailyLbl"></div>
+  <div class="tag"><b>hold</b> to cast a thread · <b>release</b> to fly<br>
+  same world for everyone today · race your ghost</div>
+  <div class="blink">HOLD TO BEGIN</div>
+</div>
+
+<div class="ui hidden" id="over">
+  <div class="lbl">THE THREAD ENDS</div>
+  <div class="big" id="finalDist">0m</div>
+  <div class="sub" id="overSub"></div>
+  <div class="btnrow">
+    <button id="retry">SWING AGAIN</button>
+    <button id="share">SHARE</button>
+  </div>
+</div>
+
+<script>
+(()=>{
+'use strict';
+/* ---------- canvas ---------- */
+const cv=document.getElementById('c'),cx=cv.getContext('2d');
+let W=0,H=0,DPR=1,SCALE=1;
+const WORLD_H=800; // fixed world units => fair daily runs on any screen
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function resize(){DPR=Math.min(devicePixelRatio||1,2);
+  W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;
+  SCALE=H/WORLD_H;}
+addEventListener('resize',resize);resize();
+
+/* ---------- storage ---------- */
+const store=(()=>{let m={};try{localStorage.setItem('_t','1');localStorage.removeItem('_t');
+  return{get:k=>localStorage.getItem(k),set:(k,v)=>localStorage.setItem(k,v)};}
+  catch(e){return{get:k=>m[k]??null,set:(k,v)=>{m[k]=String(v)}};}})();
+
+/* ---------- daily seed ---------- */
+const dayIdx=Math.floor(Date.now()/86400000);
+const dailyNum=dayIdx-20612; // #1 on launch day
+document.getElementById('dailyLbl').textContent='DAILY RUN #'+dailyNum;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;
+  return((t^t>>>14)>>>0)/4294967296}}
+
+/* ---------- audio ---------- */
+let AC=null,muted=store.get('tether_mute')==='1';
+const muteBtn=document.getElementById('mute');
+const setMI=()=>{muteBtn.textContent=muted?'✕':'♪'};setMI();
+muteBtn.addEventListener('pointerdown',e=>{e.stopPropagation();
+  muted=!muted;store.set('tether_mute',muted?'1':'0');setMI()});
+function audio(){if(!AC){try{AC=new(window.AudioContext||window.webkitAudioContext)()}catch(e){}}
+  if(AC&&AC.state==='suspended')AC.resume();return AC}
+function tone(f,d,type,vol,slide){if(muted)return;const a=audio();if(!a)return;
+  const t=a.currentTime,o=a.createOscillator(),g=a.createGain();
+  o.type=type;o.frequency.setValueAtTime(f,t);
+  if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(30,f+slide),t+d);
+  g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);
+  o.connect(g).connect(a.destination);o.start(t);o.stop(t+d)}
+function pluck(){tone(240,.18,'triangle',.2,-110)}
+function whiff(){tone(140,.08,'sine',.06,-40)}
+function chime(){tone(660,.3,'sine',.12,0);setTimeout(()=>tone(880,.4,'sine',.1,0),90)}
+function thud(){if(muted)return;const a=audio();if(!a)return;tone(110,.5,'sawtooth',.18,-70);
+  const t=a.currentTime,n=a.sampleRate*.25,b=a.createBuffer(1,n,a.sampleRate),d=b.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=a.createBufferSource(),g=a.createGain();s.buffer=b;
+  g.gain.setValueAtTime(.14,t);g.gain.exponentialRampToValueAtTime(.0001,t+.25);
+  s.connect(g).connect(a.destination);s.start(t)}
+
+/* ---------- world gen (lazy, seeded) ---------- */
+let rng,anchors=[],genX=0;
+function resetWorld(){rng=mulberry32(dayIdx*2654435761>>>0);anchors=[];genX=0;
+  anchors.push({x:260,y:170});genX=260;}
+function genTo(xLimit){
+  while(genX<xLimit){
+    const dist=genX;
+    const gap=210+rng()*130+Math.min(dist/90,170);   // gaps widen
+    genX+=gap;
+    const y=90+rng()*300;                             // canopy heights
+    anchors.push({x:genX,y});
+  }
+}
+
+/* ---------- player physics (Verlet) ---------- */
+const GRAV=1500,MAX_CAST=430,DAMP=.9995;
+let P={x:120,y:430,px:120,py:430};
+let tether=null; // {a:anchor, len}
+let camX=0,camY=0;
+let alive=false,started=false,runT=0,distM=0;
+let bestM=parseInt(store.get('tether_best_'+dayIdx)||'0',10)||0;
+let bestGhost=null;
+try{const g=store.get('tether_ghost_'+dayIdx);if(g)bestGhost=JSON.parse(g)}catch(e){}
+let ghostRec=[],recT=0;
+let parts=[],windLines=[],milestone=250,airT=0,popT=0;
+let holding=false;
+
+function resetRun(){
+  resetWorld();genTo(2000);
+  P={x:120,y:430,px:117,py:432}; // slight initial momentum
+  tether=null;camX=0;camY=0;runT=0;distM=0;recT=0;
+  ghostRec=[];parts=[];windLines=[];milestone=250;airT=0;
+  alive=true;
+}
+
+/* aim assist: best anchor ahead/above */
+function pickAnchor(){
+  let best=null,bs=-1;
+  for(const a of anchors){
+    const dx=a.x-P.x,dy=a.y-P.y;
+    if(dx<-60||dx>MAX_CAST)continue;
+    if(dy>120)continue;                       // must be above-ish
+    const d=Math.hypot(dx,dy);
+    if(d<70||d>MAX_CAST)continue;
+    const ang=Math.atan2(-dy,dx);             // up = positive
+    const angScore=1-Math.abs(ang-0.9)/2;     // prefer ~50° up-ahead
+    const dScore=1-Math.abs(d-280)/MAX_CAST;
+    const s=angScore*1.4+dScore;
+    if(s>bs){bs=s;best=a}
+  }
+  return best;
+}
+function attach(){
+  const a=pickAnchor();
+  if(!a){whiff();return}
+  tether={a,len:Math.hypot(a.x-P.x,a.y-P.y)};
+  pluck();
+  if(navigator.vibrate)try{navigator.vibrate(12)}catch(e){}
+}
+function release(){
+  if(tether){
+    const vx=P.x-P.px;
+    if(airT>0.05&&vx>4)spawnPop('');
+    tether=null;airT=0;
+  }
+}
+
+/* ---------- input ---------- */
+const titleUI=document.getElementById('title'),overUI=document.getElementById('over');
+const hud=document.getElementById('hud'),distEl=document.getElementById('dist'),
+      hudsub=document.getElementById('hudsub'),pop=document.getElementById('pop');
+function press(){
+  audio();
+  if(!started){started=true;resetRun();
+    titleUI.classList.add('hidden');hud.classList.add('on');holding=true;attach();return}
+  if(!alive)return;
+  holding=true;attach();
+}
+function unpress(){holding=false;if(alive)release()}
+addEventListener('pointerdown',e=>{if(e.target.tagName==='BUTTON')return;press()});
+addEventListener('pointerup',e=>{if(e.target.tagName==='BUTTON')return;unpress()});
+addEventListener('pointercancel',unpress);
+addEventListener('keydown',e=>{if(e.repeat)return;
+  if(e.code==='Space'){e.preventDefault();
+    if(!alive&&started&&!overUI.classList.contains('hidden')){retry();return}
+    press()}});
+addEventListener('keyup',e=>{if(e.code==='Space')unpress()});
+
+function retry(){overUI.classList.add('hidden');hud.classList.add('on');resetRun()}
+document.getElementById('retry').addEventListener('click',e=>{e.stopPropagation();retry()});
+document.getElementById('share').addEventListener('click',async e=>{
+  e.stopPropagation();
+  const m=Math.max(distM,bestM);
+  const bars='█'.repeat(Math.min(8,Math.floor(m/150)))||'▏';
+  const txt=`TETHER daily #${dailyNum}\n${m}m ${bars}\n${location.href}`;
+  try{if(navigator.share)await navigator.share({text:txt});
+    else{await navigator.clipboard.writeText(txt);
+      e.target.textContent='COPIED ✓';setTimeout(()=>e.target.textContent='SHARE',1400)}}catch(_){}
+});
+
+function spawnPop(txt){if(txt){pop.textContent=txt;pop.style.opacity=1;popT=1.1}}
+
+/* ---------- death ---------- */
+let shake=0,slowmo=0;
+function die(){
+  alive=false;tether=null;thud();shake=reduced?0:16;slowmo=1;
+  if(navigator.vibrate)try{navigator.vibrate(80)}catch(e){}
+  const isBest=distM>bestM;
+  if(isBest){bestM=distM;store.set('tether_best_'+dayIdx,bestM);
+    try{store.set('tether_ghost_'+dayIdx,JSON.stringify(ghostRec))}catch(e){}
+    bestGhost=ghostRec;}
+  setTimeout(()=>{
+    document.getElementById('finalDist').textContent=distM+'m';
+    document.getElementById('overSub').innerHTML=isBest
+      ?'<span class="newbest">★ NEW BEST — ghost saved ★</span>'
+      :'BEST TODAY '+bestM+'m'+(bestGhost?'<br>your ghost awaits':'');
+    overUI.classList.remove('hidden');hud.classList.remove('on');
+  },800);
+}
+
+/* ---------- update ---------- */
+function ghostPos(t){
+  if(!bestGhost||bestGhost.length<2)return null;
+  if(t>=bestGhost[bestGhost.length-1][0])return null;
+  let lo=0,hi=bestGhost.length-1;
+  while(lo<hi-1){const mid=(lo+hi)>>1;
+    if(bestGhost[mid][0]<=t)lo=mid;else hi=mid}
+  const A=bestGhost[lo],B=bestGhost[hi],f=(t-A[0])/(B[0]-A[0]||1);
+  return{x:A[1]+(B[1]-A[1])*f,y:A[2]+(B[2]-A[2])*f};
+}
+function update(dt){
+  if(popT>0){popT-=dt;if(popT<=0)pop.style.opacity=0}
+  if(shake>0)shake=Math.max(0,shake-dt*45);
+  if(slowmo>0){slowmo=Math.max(0,slowmo-dt*1.6);dt*=0.35+0.65*(1-slowmo)}
+  for(let i=parts.length-1;i>=0;i--){const p=parts[i];p.age+=dt;
+    p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=400*dt;if(p.age>p.life)parts.splice(i,1)}
+  for(let i=windLines.length-1;i>=0;i--){windLines[i].age+=dt;
+    if(windLines[i].age>.3)windLines.splice(i,1)}
+  if(!alive)return;
+
+  runT+=dt;airT+=tether?0:dt;
+  // Verlet integration
+  const vx=(P.x-P.px)*DAMP,vy=(P.y-P.py)*DAMP;
+  P.px=P.x;P.py=P.y;
+  P.x+=vx;P.y+=vy+GRAV*dt*dt;
+  // rope constraint + slight reel-in (energy pump)
+  if(tether){
+    tether.len=Math.max(90,tether.len*0.9975);
+    const dx=P.x-tether.a.x,dy=P.y-tether.a.y,d=Math.hypot(dx,dy);
+    if(d>tether.len){const f=(d-tether.len)/d;
+      P.x-=dx*f;P.y-=dy*f;}
+  }
+  // trail + wind
+  const spd=Math.hypot(P.x-P.px,P.y-P.py)/dt;
+  if(!reduced&&spd>520&&Math.random()<.5)
+    windLines.push({x:P.x+(Math.random()-.5)*300,y:P.y+(Math.random()-.5)*260,age:0,l:30+spd/30});
+  if(!reduced&&Math.random()<.6)
+    parts.push({x:P.x,y:P.y,vx:-vx*8+(Math.random()-.5)*30,vy:-vy*8,age:0,life:.45,r:2.2,c:'255,180,84'});
+
+  // camera
+  camX+=(P.x-W/SCALE*0.34-camX)*Math.min(1,dt*4.5);
+  camY+=(Math.min(Math.max(P.y-WORLD_H*0.52,-160),140)-camY)*Math.min(1,dt*3);
+
+  genTo(camX+W/SCALE*2.2);
+  // prune old anchors
+  while(anchors.length&&anchors[0].x<camX-600)anchors.shift();
+
+  // score
+  distM=Math.max(distM,Math.round(P.x/10));
+  distEl.textContent=distM+'m';
+  const gp=ghostPos(runT);
+  if(bestGhost){
+    const lead=gp?Math.round((P.x-gp.x)/10):distM-bestM;
+    hudsub.innerHTML=lead>=0
+      ?'<span class="ghostlead">+'+lead+'m vs ghost</span>'
+      :'<span>'+lead+'m vs ghost</span>';
+  }else hudsub.textContent='BEST '+bestM+'m';
+  if(distM>=milestone){spawnPop(milestone+'m');chime();milestone+=250}
+  // ghost recording @ ~12Hz
+  recT+=dt;if(recT>0.085){recT=0;ghostRec.push([+runT.toFixed(3),Math.round(P.x),Math.round(P.y)])}
+  // death: the forest floor
+  if(P.y>WORLD_H+90)die();
+  // drifting too far backward also ends it
+  if(P.x<camX-260)die();
+}
+
+/* ---------- render ---------- */
+function sil(x,base,a1,f1,a2,f2,ph){ // deterministic treeline height
+  return base+Math.sin(x*f1+ph)*a1+Math.sin(x*f2+ph*2.7)*a2;}
+function drawLayer(px,base,a1,f1,a2,f2,ph,col){
+  cx.fillStyle=col;cx.beginPath();
+  const step=24;
+  cx.moveTo(-10,H+10);
+  for(let sx=-10;sx<=W+24;sx+=step){
+    const wx=sx/SCALE+px;
+    cx.lineTo(sx,(sil(wx,base,a1,f1,a2,f2,ph)-0)*SCALE);
+  }
+  cx.lineTo(W+10,H+10);cx.closePath();cx.fill();
+}
+let stars=[];{const r=mulberry32(7);for(let i=0;i<70;i++)
+  stars.push({x:r(),y:r()*0.55,s:r()*1.5+.4,p:r()*6.28})}
+function draw(){
+  cx.setTransform(DPR,0,0,DPR,0,0);
+  const g=cx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0b0e1d');g.addColorStop(.7,'#141831');g.addColorStop(1,'#1a1430');
+  cx.fillStyle=g;cx.fillRect(0,0,W,H);
+  // stars
+  for(const s of stars){const tw=.3+.25*Math.sin(performance.now()/900+s.p);
+    cx.fillStyle=`rgba(232,228,240,${tw})`;
+    cx.fillRect(s.x*W,s.y*H,s.s,s.s)}
+  // parallax treelines (far → near)
+  drawLayer(camX*0.18,560,40,0.004,18,0.013,1,'rgba(34,32,68,0.85)');
+  drawLayer(camX*0.42,640,52,0.006,24,0.017,4,'rgba(26,23,52,0.95)');
+
+  let shx=0,shy=0;
+  if(shake>0){shx=(Math.random()-.5)*shake;shy=(Math.random()-.5)*shake}
+  cx.save();
+  cx.translate(shx,shy);
+  cx.scale(SCALE,SCALE);
+  cx.translate(-camX,-camY);
+
+  // wind lines
+  cx.strokeStyle='rgba(232,228,240,0.18)';cx.lineWidth=1.5;
+  for(const wl of windLines){const a=1-wl.age/.3;
+    cx.globalAlpha=a*.5;cx.beginPath();
+    cx.moveTo(wl.x,wl.y);cx.lineTo(wl.x-wl.l,wl.y);cx.stroke()}
+  cx.globalAlpha=1;
+
+  // ghost
+  const gp=alive?ghostPos(runT):null;
+  if(gp){cx.save();cx.globalAlpha=.4;
+    cx.strokeStyle='#ffb454';cx.lineWidth=1.6;
+    cx.setLineDash([4,5]);
+    cx.beginPath();cx.arc(gp.x,gp.y,10,0,6.283);cx.stroke();
+    cx.setLineDash([]);cx.restore()}
+
+  // anchors (dew nodes on unseen branches)
+  for(const a of anchors){
+    if(a.x<camX-80||a.x>camX+W/SCALE+80)continue;
+    const reachable=alive&&!tether&&a===pickHint;
+    cx.save();
+    cx.shadowColor='#7fd6a4';cx.shadowBlur=reachable?22:10;
+    cx.fillStyle=reachable?'#b8f0d0':'rgba(127,214,164,0.8)';
+    cx.beginPath();cx.arc(a.x,a.y,reachable?8:5.5,0,6.283);cx.fill();
+    // hanging stem
+    cx.strokeStyle='rgba(127,214,164,0.25)';cx.lineWidth=1.5;
+    cx.beginPath();cx.moveTo(a.x,a.y-6);cx.lineTo(a.x,a.y-46);cx.stroke();
+    cx.restore();
+  }
+
+  // rope
+  if(tether){
+    cx.strokeStyle='rgba(232,228,240,0.85)';cx.lineWidth=2;
+    cx.shadowColor='#e8e4f0';cx.shadowBlur=6;
+    cx.beginPath();cx.moveTo(tether.a.x,tether.a.y);cx.lineTo(P.x,P.y);cx.stroke();
+    cx.shadowBlur=0;
+  }
+
+  // particles
+  for(const p of parts){const a=1-p.age/p.life;
+    cx.fillStyle=`rgba(${p.c},${a*.8})`;
+    cx.beginPath();cx.arc(p.x,p.y,p.r*a,0,6.283);cx.fill()}
+
+  // player firefly
+  if(started){
+    cx.save();
+    cx.shadowColor='#ffb454';cx.shadowBlur=26;
+    cx.fillStyle='#ffb454';
+    cx.beginPath();cx.arc(P.x,P.y,8,0,6.283);cx.fill();
+    cx.shadowBlur=8;cx.fillStyle='#fff3df';
+    cx.beginPath();cx.arc(P.x,P.y,3.6,0,6.283);cx.fill();
+    cx.restore();
+  }
+  cx.restore();
+
+  // foreground treeline (in front of play)
+  drawLayer(camX*1.0+0,760,46,0.008,20,0.021,9,'rgba(13,11,30,1)');
+}
+
+/* hint anchor for render */
+let pickHint=null;
+
+/* ---------- loop ---------- */
+let last=performance.now();
+function frame(now){
+  let dt=Math.min((now-last)/1000,0.04);last=now;
+  if(document.hidden)dt=0;
+  // physics substeps for stability
+  const sub=3;for(let i=0;i<sub;i++)update(dt/sub);
+  pickHint=alive&&!tether?pickAnchor():null;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
