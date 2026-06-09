@@ -307,7 +307,8 @@ document.getElementById('share').addEventListener('click',async e=>{
     const hash=await ghostToHash(worldDay,bestGhost);
     const url=location.origin+location.pathname+hash;
     const txt=`TETHER #${dailyNum(worldDay)} — ${bestM}m.\nRace my actual ghost:\n${url}`;
-    if(navigator.share)await navigator.share({text:txt});
+    const mobile=matchMedia('(pointer:coarse)').matches;
+    if(mobile&&navigator.share){await navigator.share({text:txt});}
     else{await navigator.clipboard.writeText(txt);
       btn.textContent='LINK COPIED ✓';setTimeout(()=>btn.textContent='SEND MY GHOST',1600);return}
   }catch(_){}
