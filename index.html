@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>TETHER — daily swing run</title>
-<meta name="description" content="Real rope physics. One daily world for everyone. Hold to tether, release to fly. Race your own ghost.">
+<meta name="description" content="Real rope physics. One daily world for everyone. Send your ghost inside a link.">
 <style>
 :root{
   --night:#0b0e1d;--ink:#141831;--silk:#e8e4f0;--ember:#ffb454;
@@ -24,6 +24,7 @@ h1{font-size:clamp(44px,13vw,90px);letter-spacing:.34em;margin-left:.34em;
   color:var(--ember);font-weight:700;
   text-shadow:0 0 28px rgba(255,180,84,.5),0 0 90px rgba(255,180,84,.2)}
 .daily{margin-top:10px;font-size:12px;letter-spacing:.3em;color:var(--moss)}
+.challenge{margin-top:8px;font-size:12px;letter-spacing:.2em;color:var(--ember)}
 .tag{margin-top:18px;font-size:clamp(12px,3.4vw,14px);color:var(--dim);
   letter-spacing:.1em;line-height:1.9}
 .tag b{color:var(--silk)}
@@ -45,7 +46,7 @@ h1{font-size:clamp(44px,13vw,90px);letter-spacing:.34em;margin-left:.34em;
   text-shadow:0 0 30px rgba(255,180,84,.45)}
 #over .sub{margin-top:16px;font-size:13px;letter-spacing:.18em;color:var(--moss);line-height:2}
 .newbest{color:var(--ember);animation:pl 1s ease-in-out infinite}
-.btnrow{margin-top:32px;display:flex;gap:14px;pointer-events:auto}
+.btnrow{margin-top:32px;display:flex;gap:14px;pointer-events:auto;flex-wrap:wrap;justify-content:center}
 button{font:inherit;font-size:12px;letter-spacing:.2em;padding:13px 24px;
   background:rgba(255,180,84,.08);color:var(--ember);
   border:1px solid rgba(255,180,84,.45);border-radius:999px;cursor:pointer}
@@ -67,8 +68,9 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
 <div class="ui" id="title">
   <h1>TETHER</h1>
   <div class="daily" id="dailyLbl"></div>
+  <div class="challenge" id="chLbl"></div>
   <div class="tag"><b>hold</b> to cast a thread · <b>release</b> to fly<br>
-  same world for everyone today · race your ghost</div>
+  read the leaves — the wind is real</div>
   <div class="blink">HOLD TO BEGIN</div>
 </div>
 
@@ -78,7 +80,7 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
   <div class="sub" id="overSub"></div>
   <div class="btnrow">
     <button id="retry">SWING AGAIN</button>
-    <button id="share">SHARE</button>
+    <button id="share">SEND MY GHOST</button>
   </div>
 </div>
 
@@ -88,7 +90,7 @@ button:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
 /* ---------- canvas ---------- */
 const cv=document.getElementById('c'),cx=cv.getContext('2d');
 let W=0,H=0,DPR=1,SCALE=1;
-const WORLD_H=800; // fixed world units => fair daily runs on any screen
+const WORLD_H=800;
 const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
 function resize(){DPR=Math.min(devicePixelRatio||1,2);
   W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;
@@ -100,13 +102,62 @@ const store=(()=>{let m={};try{localStorage.setItem('_t','1');localStorage.remov
   return{get:k=>localStorage.getItem(k),set:(k,v)=>localStorage.setItem(k,v)};}
   catch(e){return{get:k=>m[k]??null,set:(k,v)=>{m[k]=String(v)}};}})();
 
-/* ---------- daily seed ---------- */
-const dayIdx=Math.floor(Date.now()/86400000);
-const dailyNum=dayIdx-20612; // #1 on launch day
-document.getElementById('dailyLbl').textContent='DAILY RUN #'+dailyNum;
+/* ---------- day / world seed ---------- */
+const todayIdx=Math.floor(Date.now()/86400000);
+let worldDay=todayIdx;            // may be overridden by a challenge link
+let challengeGhost=null,challengeM=0;
+const dailyNum=d=>d-20612;
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;
   let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;
   return((t^t>>>14)>>>0)/4294967296}}
+
+/* ---------- ghost codec: ghost lives inside the URL ---------- */
+const GSTEP=0.085;
+const b64e=u8=>btoa(String.fromCharCode(...u8)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const b64d=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');const b=atob(s),u=new Uint8Array(b.length);
+  for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u};
+const zz=n=>(n<<1)^(n>>31), unzz=n=>(n>>>1)^-(n&1);
+function packGhost(day,pts){ // pts = flat [x0,y0,x1,y1...]
+  const out=[1,day&255,(day>>8)&255];
+  const n=Math.min(pts.length/2,1800);
+  out.push(n&255,(n>>8)&255);
+  let px=0,py=0;
+  for(let i=0;i<n;i++){
+    let dx=zz(Math.round(pts[i*2])-px),dy=zz(Math.round(pts[i*2+1])-py);
+    px=Math.round(pts[i*2]);py=Math.round(pts[i*2+1]);
+    for(let v of[dx,dy]){while(v>=128){out.push((v&127)|128);v>>>=7}out.push(v)}
+  }
+  return new Uint8Array(out);
+}
+function unpackGhost(u8){
+  if(u8[0]!==1)throw 0;
+  const day=u8[1]|(u8[2]<<8),n=u8[3]|(u8[4]<<8);
+  let i=5,px=0,py=0;const pts=[];
+  const rv=()=>{let v=0,s=0;for(;;){const b=u8[i++];v|=(b&127)<<s;if(b<128)return v;s+=7}};
+  for(let k=0;k<n;k++){px+=unzz(rv());py+=unzz(rv());pts.push(px,py)}
+  return{day,pts};
+}
+async function deflate(u8){
+  if(typeof CompressionStream==='undefined')return{c:0,d:u8};
+  const cs=new CompressionStream('deflate-raw');
+  const w=cs.writable.getWriter();w.write(u8);w.close();
+  return{c:1,d:new Uint8Array(await new Response(cs.readable).arrayBuffer())};
+}
+async function inflate(u8){
+  const ds=new DecompressionStream('deflate-raw');
+  const w=ds.writable.getWriter();w.write(u8);w.close();
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+async function ghostToHash(day,pts){
+  const raw=packGhost(day,pts),z=await deflate(raw);
+  return'#g='+(z.c?'c':'r')+b64e(z.d);
+}
+async function hashToGhost(h){
+  const m=h.match(/#g=([cr])([A-Za-z0-9_-]+)/);if(!m)return null;
+  let u8=b64d(m[2]);
+  if(m[1]==='c')u8=await inflate(u8);
+  return unpackGhost(u8);
+}
 
 /* ---------- audio ---------- */
 let AC=null,muted=store.get('tether_mute')==='1';
@@ -132,72 +183,97 @@ function thud(){if(muted)return;const a=audio();if(!a)return;tone(110,.5,'sawtoo
   g.gain.setValueAtTime(.14,t);g.gain.exponentialRampToValueAtTime(.0001,t+.25);
   s.connect(g).connect(a.destination);s.start(t)}
 
-/* ---------- world gen (lazy, seeded) ---------- */
+/* ---------- wind: daily-seeded field, readable from the leaves ---------- */
+let windAmp=0,wp1=0,wp2=0;
+function windAt(x){ // horizontal accel, units/s^2
+  return windAmp*(Math.sin(x*0.0021+wp1)+0.55*Math.sin(x*0.00072+wp2));
+}
+
+/* ---------- world gen ---------- */
 let rng,anchors=[],genX=0;
-function resetWorld(){rng=mulberry32(dayIdx*2654435761>>>0);anchors=[];genX=0;
-  anchors.push({x:260,y:170});genX=260;}
+function resetWorld(){
+  rng=mulberry32(worldDay*2654435761>>>0);
+  windAmp=45+rng()*75;wp1=rng()*6.28;wp2=rng()*6.28;
+  anchors=[];genX=0;
+  anchors.push({x:260,y:170});genX=260;
+}
 function genTo(xLimit){
   while(genX<xLimit){
     const dist=genX;
-    const gap=210+rng()*130+Math.min(dist/90,170);   // gaps widen
+    const gap=210+rng()*130+Math.min(dist/90,170);
     genX+=gap;
-    const y=90+rng()*300;                             // canopy heights
+    const y=90+rng()*300;
     anchors.push({x:genX,y});
   }
 }
+/* anchors sway in the local wind — moving pivots feed energy back in */
+function apos(a,now){
+  const w=windAt(a.x);
+  return{x:a.x+Math.sin(now*0.0011+a.x*0.13)*w*0.10,y:a.y};
+}
 
-/* ---------- player physics (Verlet) ---------- */
-const GRAV=1500,MAX_CAST=430,DAMP=.9995;
+/* ---------- player physics ---------- */
+const GRAV=1500,MAX_CAST=430,DAMP=.9995,PUMP=380;
 let P={x:120,y:430,px:120,py:430};
-let tether=null; // {a:anchor, len}
+let tether=null;
 let camX=0,camY=0;
 let alive=false,started=false,runT=0,distM=0;
-let bestM=parseInt(store.get('tether_best_'+dayIdx)||'0',10)||0;
-let bestGhost=null;
-try{const g=store.get('tether_ghost_'+dayIdx);if(g)bestGhost=JSON.parse(g)}catch(e){}
+let bestM=0,bestGhost=null;
+function loadBest(){
+  bestM=parseInt(store.get('tether_b2_'+worldDay)||'0',10)||0;
+  bestGhost=null;
+  try{const g=store.get('tether_g2_'+worldDay);if(g)bestGhost=JSON.parse(g)}catch(e){}
+}
+loadBest();
+let raceGhost=null,raceM=0;   // what we actually race: challenge ghost wins over local
+function setRace(){
+  if(challengeGhost){raceGhost=challengeGhost;raceM=challengeM}
+  else{raceGhost=bestGhost;raceM=bestM}
+}
+setRace();
 let ghostRec=[],recT=0;
-let parts=[],windLines=[],milestone=250,airT=0,popT=0;
+let parts=[],leaves=[],windLines=[],milestone=250,popT=0;
 let holding=false;
 
 function resetRun(){
   resetWorld();genTo(2000);
-  P={x:120,y:430,px:117,py:432}; // slight initial momentum
+  P={x:120,y:430,px:117,py:432};
   tether=null;camX=0;camY=0;runT=0;distM=0;recT=0;
-  ghostRec=[];parts=[];windLines=[];milestone=250;airT=0;
-  alive=true;
+  ghostRec=[];parts=[];windLines=[];leaves=[];milestone=250;
+  for(let i=0;i<26;i++)leaves.push(newLeaf(true));
+  alive=true;setRace();
+}
+function newLeaf(anywhere){
+  return{x:camX+(anywhere?Math.random():1.05+Math.random()*.3)*(W/SCALE),
+    y:Math.random()*WORLD_H,r:2+Math.random()*2.5,
+    ph:Math.random()*6.28,vy:14+Math.random()*22};
 }
 
-/* aim assist: best anchor ahead/above */
-function pickAnchor(){
+function pickAnchor(now){
   let best=null,bs=-1;
   for(const a of anchors){
-    const dx=a.x-P.x,dy=a.y-P.y;
+    const ap=apos(a,now);
+    const dx=ap.x-P.x,dy=ap.y-P.y;
     if(dx<-60||dx>MAX_CAST)continue;
-    if(dy>120)continue;                       // must be above-ish
+    if(dy>120)continue;
     const d=Math.hypot(dx,dy);
     if(d<70||d>MAX_CAST)continue;
-    const ang=Math.atan2(-dy,dx);             // up = positive
-    const angScore=1-Math.abs(ang-0.9)/2;     // prefer ~50° up-ahead
-    const dScore=1-Math.abs(d-280)/MAX_CAST;
-    const s=angScore*1.4+dScore;
+    const ang=Math.atan2(-dy,dx);
+    const s=(1-Math.abs(ang-0.9)/2)*1.4+(1-Math.abs(d-280)/MAX_CAST);
     if(s>bs){bs=s;best=a}
   }
   return best;
 }
 function attach(){
-  const a=pickAnchor();
+  const now=performance.now();
+  const a=pickAnchor(now);
   if(!a){whiff();return}
-  tether={a,len:Math.hypot(a.x-P.x,a.y-P.y)};
+  const ap=apos(a,now);
+  tether={a,len:Math.hypot(ap.x-P.x,ap.y-P.y)};
   pluck();
   if(navigator.vibrate)try{navigator.vibrate(12)}catch(e){}
 }
-function release(){
-  if(tether){
-    const vx=P.x-P.px;
-    if(airT>0.05&&vx>4)spawnPop('');
-    tether=null;airT=0;
-  }
-}
+function release(){if(tether)tether=null}
 
 /* ---------- input ---------- */
 const titleUI=document.getElementById('title'),overUI=document.getElementById('over');
@@ -223,16 +299,22 @@ addEventListener('keyup',e=>{if(e.code==='Space')unpress()});
 function retry(){overUI.classList.add('hidden');hud.classList.add('on');resetRun()}
 document.getElementById('retry').addEventListener('click',e=>{e.stopPropagation();retry()});
 document.getElementById('share').addEventListener('click',async e=>{
-  e.stopPropagation();
-  const m=Math.max(distM,bestM);
-  const bars='█'.repeat(Math.min(8,Math.floor(m/150)))||'▏';
-  const txt=`TETHER daily #${dailyNum}\n${m}m ${bars}\n${location.href}`;
-  try{if(navigator.share)await navigator.share({text:txt});
+  e.stopPropagation();const btn=e.target;
+  if(!bestGhost||!bestGhost.length){btn.textContent='NO RUN YET';
+    setTimeout(()=>btn.textContent='SEND MY GHOST',1200);return}
+  btn.textContent='WEAVING…';
+  try{
+    const hash=await ghostToHash(worldDay,bestGhost);
+    const url=location.origin+location.pathname+hash;
+    const txt=`TETHER #${dailyNum(worldDay)} — ${bestM}m.\nRace my actual ghost:\n${url}`;
+    if(navigator.share)await navigator.share({text:txt});
     else{await navigator.clipboard.writeText(txt);
-      e.target.textContent='COPIED ✓';setTimeout(()=>e.target.textContent='SHARE',1400)}}catch(_){}
+      btn.textContent='LINK COPIED ✓';setTimeout(()=>btn.textContent='SEND MY GHOST',1600);return}
+  }catch(_){}
+  btn.textContent='SEND MY GHOST';
 });
 
-function spawnPop(txt){if(txt){pop.textContent=txt;pop.style.opacity=1;popT=1.1}}
+function spawnPop(txt){pop.textContent=txt;pop.style.opacity=1;popT=1.1}
 
 /* ---------- death ---------- */
 let shake=0,slowmo=0;
@@ -240,29 +322,31 @@ function die(){
   alive=false;tether=null;thud();shake=reduced?0:16;slowmo=1;
   if(navigator.vibrate)try{navigator.vibrate(80)}catch(e){}
   const isBest=distM>bestM;
-  if(isBest){bestM=distM;store.set('tether_best_'+dayIdx,bestM);
-    try{store.set('tether_ghost_'+dayIdx,JSON.stringify(ghostRec))}catch(e){}
-    bestGhost=ghostRec;}
+  if(isBest){bestM=distM;bestGhost=ghostRec.slice();
+    store.set('tether_b2_'+worldDay,bestM);
+    try{store.set('tether_g2_'+worldDay,JSON.stringify(bestGhost))}catch(e){}}
+  const beatCh=challengeGhost&&distM>challengeM;
   setTimeout(()=>{
     document.getElementById('finalDist').textContent=distM+'m';
-    document.getElementById('overSub').innerHTML=isBest
-      ?'<span class="newbest">★ NEW BEST — ghost saved ★</span>'
-      :'BEST TODAY '+bestM+'m'+(bestGhost?'<br>your ghost awaits':'');
+    let sub=isBest?'<span class="newbest">★ NEW BEST ★</span>':'BEST '+bestM+'m';
+    if(challengeGhost)sub+=beatCh?'<br><span class="newbest">GHOST DEFEATED ('+challengeM+'m)</span>'
+                                 :'<br>ghost stands at '+challengeM+'m';
+    document.getElementById('overSub').innerHTML=sub;
     overUI.classList.remove('hidden');hud.classList.remove('on');
   },800);
 }
 
-/* ---------- update ---------- */
-function ghostPos(t){
-  if(!bestGhost||bestGhost.length<2)return null;
-  if(t>=bestGhost[bestGhost.length-1][0])return null;
-  let lo=0,hi=bestGhost.length-1;
-  while(lo<hi-1){const mid=(lo+hi)>>1;
-    if(bestGhost[mid][0]<=t)lo=mid;else hi=mid}
-  const A=bestGhost[lo],B=bestGhost[hi],f=(t-A[0])/(B[0]-A[0]||1);
-  return{x:A[1]+(B[1]-A[1])*f,y:A[2]+(B[2]-A[2])*f};
+/* ---------- ghost playback ---------- */
+function ghostPos(g,t){
+  if(!g||g.length<4)return null;
+  const i=t/GSTEP,i0=Math.floor(i),n=g.length/2;
+  if(i0>=n-1)return null;
+  const f=i-i0;
+  return{x:g[i0*2]+(g[i0*2+2]-g[i0*2])*f,y:g[i0*2+1]+(g[i0*2+3]-g[i0*2+1])*f};
 }
-function update(dt){
+
+/* ---------- update ---------- */
+function update(dt,now){
   if(popT>0){popT-=dt;if(popT<=0)pop.style.opacity=0}
   if(shake>0)shake=Math.max(0,shake-dt*45);
   if(slowmo>0){slowmo=Math.max(0,slowmo-dt*1.6);dt*=0.35+0.65*(1-slowmo)}
@@ -270,162 +354,169 @@ function update(dt){
     p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=400*dt;if(p.age>p.life)parts.splice(i,1)}
   for(let i=windLines.length-1;i>=0;i--){windLines[i].age+=dt;
     if(windLines[i].age>.3)windLines.splice(i,1)}
+  // leaves ride the wind field — this is how you read it
+  for(let i=leaves.length-1;i>=0;i--){const L=leaves[i];
+    L.x+=windAt(L.x)*0.9*dt+Math.sin(now*0.002+L.ph)*8*dt;
+    L.y+=L.vy*dt;
+    if(L.y>WORLD_H+20||L.x<camX-100){leaves[i]=newLeaf(false)}
+    if(L.x>camX+W/SCALE+150)L.x=camX-80;}
   if(!alive)return;
 
-  runT+=dt;airT+=tether?0:dt;
-  // Verlet integration
-  const vx=(P.x-P.px)*DAMP,vy=(P.y-P.py)*DAMP;
+  runT+=dt;
+  const vx=(P.x-P.px),vy=(P.y-P.py);
   P.px=P.x;P.py=P.y;
-  P.x+=vx;P.y+=vy+GRAV*dt*dt;
-  // rope constraint + slight reel-in (energy pump)
-  if(tether){
-    tether.len=Math.max(90,tether.len*0.9975);
-    const dx=P.x-tether.a.x,dy=P.y-tether.a.y,d=Math.hypot(dx,dy);
-    if(d>tether.len){const f=(d-tether.len)/d;
-      P.x-=dx*f;P.y-=dy*f;}
-  }
-  // trail + wind
-  const spd=Math.hypot(P.x-P.px,P.y-P.py)/dt;
-  if(!reduced&&spd>520&&Math.random()<.5)
-    windLines.push({x:P.x+(Math.random()-.5)*300,y:P.y+(Math.random()-.5)*260,age:0,l:30+spd/30});
-  if(!reduced&&Math.random()<.6)
-    parts.push({x:P.x,y:P.y,vx:-vx*8+(Math.random()-.5)*30,vy:-vy*8,age:0,life:.45,r:2.2,c:'255,180,84'});
+  P.x+=vx*DAMP;P.y+=vy*DAMP+GRAV*dt*dt;
+  // the wind is a real force
+  P.x+=windAt(P.x)*(tether?0.4:1)*dt*dt;
 
-  // camera
+  if(tether){
+    const ap=apos(tether.a,now);
+    // tangential pump: inject energy when slow, like kicking your legs
+    const rx=P.x-ap.x,ry=P.y-ap.y,d=Math.hypot(rx,ry)||1;
+    const tx=-ry/d,ty=rx/d;                 // tangent (CCW)
+    const vt=vx*tx+vy*ty;                    // tangential speed (per frame)
+    const spd=Math.hypot(vx,vy);
+    if(spd<9){                               // slow: pump toward forward motion
+      const dir=vt>=-0.2?1:-1;
+      const k=PUMP*(1-spd/9);
+      P.x+=tx*dir*k*dt*dt;P.y+=ty*dir*k*dt*dt;
+    }
+    tether.len=Math.max(90,tether.len*0.9975);
+    const dx=P.x-ap.x,dy=P.y-ap.y,dd=Math.hypot(dx,dy);
+    if(dd>tether.len){const f=(dd-tether.len)/dd;P.x-=dx*f;P.y-=dy*f;}
+  }
+  const spd2=Math.hypot(P.x-P.px,P.y-P.py)/dt;
+  if(!reduced&&spd2>520&&Math.random()<.5)
+    windLines.push({x:P.x+(Math.random()-.5)*300,y:P.y+(Math.random()-.5)*260,age:0,l:30+spd2/30});
+  if(!reduced&&Math.random()<.6)
+    parts.push({x:P.x,y:P.y,vx:-(P.x-P.px)*8+(Math.random()-.5)*30,vy:-(P.y-P.py)*8,age:0,life:.45,r:2.2,c:'255,180,84'});
+
   camX+=(P.x-W/SCALE*0.34-camX)*Math.min(1,dt*4.5);
   camY+=(Math.min(Math.max(P.y-WORLD_H*0.52,-160),140)-camY)*Math.min(1,dt*3);
-
   genTo(camX+W/SCALE*2.2);
-  // prune old anchors
   while(anchors.length&&anchors[0].x<camX-600)anchors.shift();
 
-  // score
   distM=Math.max(distM,Math.round(P.x/10));
   distEl.textContent=distM+'m';
-  const gp=ghostPos(runT);
-  if(bestGhost){
-    const lead=gp?Math.round((P.x-gp.x)/10):distM-bestM;
+  const gp=ghostPos(raceGhost,runT);
+  if(raceGhost){
+    const lead=gp?Math.round((P.x-gp.x)/10):distM-raceM;
     hudsub.innerHTML=lead>=0
       ?'<span class="ghostlead">+'+lead+'m vs ghost</span>'
       :'<span>'+lead+'m vs ghost</span>';
   }else hudsub.textContent='BEST '+bestM+'m';
   if(distM>=milestone){spawnPop(milestone+'m');chime();milestone+=250}
-  // ghost recording @ ~12Hz
-  recT+=dt;if(recT>0.085){recT=0;ghostRec.push([+runT.toFixed(3),Math.round(P.x),Math.round(P.y)])}
-  // death: the forest floor
+  recT+=dt;
+  while(recT>=GSTEP){recT-=GSTEP;
+    if(ghostRec.length<3600)ghostRec.push(Math.round(P.x),Math.round(P.y))}
   if(P.y>WORLD_H+90)die();
-  // drifting too far backward also ends it
   if(P.x<camX-260)die();
 }
 
 /* ---------- render ---------- */
-function sil(x,base,a1,f1,a2,f2,ph){ // deterministic treeline height
-  return base+Math.sin(x*f1+ph)*a1+Math.sin(x*f2+ph*2.7)*a2;}
+function sil(x,base,a1,f1,a2,f2,ph){return base+Math.sin(x*f1+ph)*a1+Math.sin(x*f2+ph*2.7)*a2}
 function drawLayer(px,base,a1,f1,a2,f2,ph,col){
-  cx.fillStyle=col;cx.beginPath();
-  const step=24;
-  cx.moveTo(-10,H+10);
-  for(let sx=-10;sx<=W+24;sx+=step){
+  cx.fillStyle=col;cx.beginPath();cx.moveTo(-10,H+10);
+  for(let sx=-10;sx<=W+24;sx+=24){
     const wx=sx/SCALE+px;
-    cx.lineTo(sx,(sil(wx,base,a1,f1,a2,f2,ph)-0)*SCALE);
+    cx.lineTo(sx,sil(wx,base,a1,f1,a2,f2,ph)*SCALE);
   }
   cx.lineTo(W+10,H+10);cx.closePath();cx.fill();
 }
 let stars=[];{const r=mulberry32(7);for(let i=0;i<70;i++)
   stars.push({x:r(),y:r()*0.55,s:r()*1.5+.4,p:r()*6.28})}
-function draw(){
+let pickHint=null;
+function draw(now){
   cx.setTransform(DPR,0,0,DPR,0,0);
   const g=cx.createLinearGradient(0,0,0,H);
   g.addColorStop(0,'#0b0e1d');g.addColorStop(.7,'#141831');g.addColorStop(1,'#1a1430');
   cx.fillStyle=g;cx.fillRect(0,0,W,H);
-  // stars
-  for(const s of stars){const tw=.3+.25*Math.sin(performance.now()/900+s.p);
-    cx.fillStyle=`rgba(232,228,240,${tw})`;
-    cx.fillRect(s.x*W,s.y*H,s.s,s.s)}
-  // parallax treelines (far → near)
+  for(const s of stars){const tw=.3+.25*Math.sin(now/900+s.p);
+    cx.fillStyle=`rgba(232,228,240,${tw})`;cx.fillRect(s.x*W,s.y*H,s.s,s.s)}
   drawLayer(camX*0.18,560,40,0.004,18,0.013,1,'rgba(34,32,68,0.85)');
   drawLayer(camX*0.42,640,52,0.006,24,0.017,4,'rgba(26,23,52,0.95)');
 
   let shx=0,shy=0;
   if(shake>0){shx=(Math.random()-.5)*shake;shy=(Math.random()-.5)*shake}
-  cx.save();
-  cx.translate(shx,shy);
-  cx.scale(SCALE,SCALE);
-  cx.translate(-camX,-camY);
+  cx.save();cx.translate(shx,shy);cx.scale(SCALE,SCALE);cx.translate(-camX,-camY);
 
-  // wind lines
+  // leaves (the wind, made visible)
+  for(const L of leaves){
+    const w=windAt(L.x);
+    cx.save();cx.translate(L.x,L.y);cx.rotate(Math.atan2(L.vy,w*0.9)+Math.sin(now*0.003+L.ph)*0.4);
+    cx.fillStyle='rgba(127,214,164,0.4)';
+    cx.beginPath();cx.ellipse(0,0,L.r*1.7,L.r*0.8,0,0,6.283);cx.fill();cx.restore();
+  }
   cx.strokeStyle='rgba(232,228,240,0.18)';cx.lineWidth=1.5;
   for(const wl of windLines){const a=1-wl.age/.3;
     cx.globalAlpha=a*.5;cx.beginPath();
     cx.moveTo(wl.x,wl.y);cx.lineTo(wl.x-wl.l,wl.y);cx.stroke()}
   cx.globalAlpha=1;
 
-  // ghost
-  const gp=alive?ghostPos(runT):null;
-  if(gp){cx.save();cx.globalAlpha=.4;
-    cx.strokeStyle='#ffb454';cx.lineWidth=1.6;
-    cx.setLineDash([4,5]);
+  const gp=alive?ghostPos(raceGhost,runT):null;
+  if(gp){cx.save();cx.globalAlpha=.45;
+    cx.strokeStyle='#ffb454';cx.lineWidth=1.6;cx.setLineDash([4,5]);
     cx.beginPath();cx.arc(gp.x,gp.y,10,0,6.283);cx.stroke();
     cx.setLineDash([]);cx.restore()}
 
-  // anchors (dew nodes on unseen branches)
   for(const a of anchors){
     if(a.x<camX-80||a.x>camX+W/SCALE+80)continue;
-    const reachable=alive&&!tether&&a===pickHint;
+    const ap=apos(a,now);
+    const hot=alive&&!tether&&a===pickHint;
     cx.save();
-    cx.shadowColor='#7fd6a4';cx.shadowBlur=reachable?22:10;
-    cx.fillStyle=reachable?'#b8f0d0':'rgba(127,214,164,0.8)';
-    cx.beginPath();cx.arc(a.x,a.y,reachable?8:5.5,0,6.283);cx.fill();
-    // hanging stem
+    cx.shadowColor='#7fd6a4';cx.shadowBlur=hot?22:10;
+    cx.fillStyle=hot?'#b8f0d0':'rgba(127,214,164,0.8)';
+    cx.beginPath();cx.arc(ap.x,ap.y,hot?8:5.5,0,6.283);cx.fill();
     cx.strokeStyle='rgba(127,214,164,0.25)';cx.lineWidth=1.5;
-    cx.beginPath();cx.moveTo(a.x,a.y-6);cx.lineTo(a.x,a.y-46);cx.stroke();
+    cx.beginPath();cx.moveTo(ap.x,ap.y-6);cx.lineTo(a.x,a.y-46);cx.stroke();
     cx.restore();
   }
-
-  // rope
   if(tether){
+    const ap=apos(tether.a,now);
     cx.strokeStyle='rgba(232,228,240,0.85)';cx.lineWidth=2;
     cx.shadowColor='#e8e4f0';cx.shadowBlur=6;
-    cx.beginPath();cx.moveTo(tether.a.x,tether.a.y);cx.lineTo(P.x,P.y);cx.stroke();
+    cx.beginPath();cx.moveTo(ap.x,ap.y);cx.lineTo(P.x,P.y);cx.stroke();
     cx.shadowBlur=0;
   }
-
-  // particles
   for(const p of parts){const a=1-p.age/p.life;
     cx.fillStyle=`rgba(${p.c},${a*.8})`;
     cx.beginPath();cx.arc(p.x,p.y,p.r*a,0,6.283);cx.fill()}
-
-  // player firefly
   if(started){
-    cx.save();
-    cx.shadowColor='#ffb454';cx.shadowBlur=26;
-    cx.fillStyle='#ffb454';
-    cx.beginPath();cx.arc(P.x,P.y,8,0,6.283);cx.fill();
+    cx.save();cx.shadowColor='#ffb454';cx.shadowBlur=26;
+    cx.fillStyle='#ffb454';cx.beginPath();cx.arc(P.x,P.y,8,0,6.283);cx.fill();
     cx.shadowBlur=8;cx.fillStyle='#fff3df';
-    cx.beginPath();cx.arc(P.x,P.y,3.6,0,6.283);cx.fill();
-    cx.restore();
+    cx.beginPath();cx.arc(P.x,P.y,3.6,0,6.283);cx.fill();cx.restore();
   }
   cx.restore();
-
-  // foreground treeline (in front of play)
-  drawLayer(camX*1.0+0,760,46,0.008,20,0.021,9,'rgba(13,11,30,1)');
+  drawLayer(camX*1.0,760,46,0.008,20,0.021,9,'rgba(13,11,30,1)');
 }
 
-/* hint anchor for render */
-let pickHint=null;
-
-/* ---------- loop ---------- */
-let last=performance.now();
-function frame(now){
-  let dt=Math.min((now-last)/1000,0.04);last=now;
-  if(document.hidden)dt=0;
-  // physics substeps for stability
-  const sub=3;for(let i=0;i<sub;i++)update(dt/sub);
-  pickHint=alive&&!tether?pickAnchor():null;
-  draw();
+/* ---------- boot: parse challenge link, then run ---------- */
+(async()=>{
+  try{
+    const g=await hashToGhost(location.hash);
+    if(g&&g.pts.length>=4){
+      challengeGhost=g.pts;
+      challengeM=Math.round(Math.max(...g.pts.filter((_,i)=>i%2===0))/10);
+      worldDay=g.day|((todayIdx>>16)<<16); // restore high bits of day
+      if(Math.abs(worldDay-todayIdx)>32000)worldDay=g.day; // safety
+      loadBest();setRace();
+      document.getElementById('chLbl').textContent=
+        'GHOST CHALLENGE · '+challengeM+'m · beat the dotted firefly';
+    }
+  }catch(e){}
+  document.getElementById('dailyLbl').textContent='DAILY RUN #'+dailyNum(worldDay);
+  let last=performance.now();
+  function frame(now){
+    let dt=Math.min((now-last)/1000,0.04);last=now;
+    if(document.hidden)dt=0;
+    for(let i=0;i<3;i++)update(dt/3,now);
+    pickHint=alive&&!tether?pickAnchor(now):null;
+    draw(now);
+    requestAnimationFrame(frame);
+  }
   requestAnimationFrame(frame);
-}
-requestAnimationFrame(frame);
+})();
 })();
 </script>
 </body>
